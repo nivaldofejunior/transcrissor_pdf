@@ -1,0 +1,24 @@
+# --- Core ---
+fastapi
+uvicorn[standard]        # servidor ASGI com suporte extra (recarregamento, logs, etc.)
+pydantic
+python-dotenv            # para ler variáveis de ambiente
+
+# --- MongoDB ---
+motor                    # driver assíncrono para MongoDB
+
+# --- Upload e arquivos ---
+aiofiles                 # salvar arquivos de forma assíncrona
+python-multipart         # suporte a UploadFile (multipart/form-data)
+
+# --- PDF e processamento de texto ---
+PyMuPDF                  # extração de texto de PDFs
+pydyub
+
+# --- Geração de áudio ---
+gTTS                     # voz do Google (requer internet)
+# pyttsx3                # alternativa offline se necessário (comentar/descomentar conforme uso)
+
+# --- Outras libs úteis (opcional) ---
+httpx                    # cliente HTTP assíncrono (caso use chamadas externas)
+

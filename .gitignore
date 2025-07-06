@@ -1,0 +1,27 @@
+# --- Ambientes virtuais ---
+venv/
+.env/
+*.env
+transcrissor-pdf/*
+google_credentials.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+*.db
+
+# --- IDEs e editores ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Arquivos temporários ---
+*.swp
+*.bak
+*.tmp
+
