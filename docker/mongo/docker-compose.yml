@@ -9,16 +9,8 @@ services:
       - "27017:27017"
     volumes:
       - ./data:/data/db
+      - ./init:/docker-entrypoint-initdb.d
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: rootSenha123
       MONGO_INITDB_DATABASE: projeto_t_db
-    command: >
-      bash -c "
-        mongod --bind_ip_all --auth & 
-        sleep 5 &&
-        mongosh --username root --password rootSenha123 --authenticationDatabase admin <<EOF
-          use projeto_t_db;
-          db.createUser({user: 'projetot_user', pwd: 'nivaldo', roles:[{role:'readWrite', db:'projeto_t_db'}]});
-        EOF
-      "

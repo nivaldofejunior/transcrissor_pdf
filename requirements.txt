@@ -13,7 +13,7 @@ python-multipart         # suporte a UploadFile (multipart/form-data)
 
 # --- PDF e processamento de texto ---
 PyMuPDF                  # extração de texto de PDFs
-pydyub
+pydub
 
 # --- Geração de áudio ---
 gTTS                     # voz do Google (requer internet)
@@ -21,4 +21,9 @@ gTTS                     # voz do Google (requer internet)
 
 # --- Outras libs úteis (opcional) ---
 httpx                    # cliente HTTP assíncrono (caso use chamadas externas)
+
+
+edge-tts
+google-cloud-texttospeech
+google-generativeai
 
