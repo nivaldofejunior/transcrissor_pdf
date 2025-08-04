@@ -2,8 +2,18 @@
 venv/
 .env/
 *.env
-transcrissor-pdf/*
 google_credentials.json
+
+# --- Pastas locais ignoradas ---
+transcrissor-pdf/
+
+# --- MongoDB (Docker volumes e dados internos) ---
+/docker/mongo/data/
+/docker/mongo/data/.mongodb/
+/docker/mongo/data/journal/
+/docker/mongo/data/*.wt
+/docker/mongo/data/WiredTiger*
+/docker/mongo/data/_mdb_catalog.*
 
 # --- Python ---
 __pycache__/
@@ -24,4 +34,3 @@ __pycache__/
 *.swp
 *.bak
 *.tmp
-

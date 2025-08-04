@@ -1,10 +1,15 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 import google.generativeai as genai
 
-load_dotenv()  # Carrega variáveis do .env
+# Carrega o .env do ambiente apropriado
+env = os.getenv("APP_ENV", "dev")
+dotenv_path = Path(f".env.{env}") if Path(f".env.{env}").exists() else Path(".env")
+load_dotenv(dotenv_path=dotenv_path)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Lê a chave do .env
+# Carrega a chave da API do Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
 def melhorar_pontuacao_com_gemini(texto: str) -> str:

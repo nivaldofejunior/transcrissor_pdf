@@ -8,12 +8,20 @@ from app.utils.tratar_texto import dividir_texto_em_blocos, limpar_texto_para_tt
 from pydub import AudioSegment  # Requer instalação: pip install pydub
 from uuid import uuid4
 
-load_dotenv()
+# Carrega o .env do ambiente
+env = os.getenv("APP_ENV", "dev")
+dotenv_path = Path(f".env.{env}") if Path(f".env.{env}").exists() else Path(".env")
+load_dotenv(dotenv_path=dotenv_path)
 
-print("[DEBUG] GOOGLE_APPLICATION_CREDENTIALS:", os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+# Garante que o Google use o caminho correto da chave
+google_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+if not google_credentials or not Path(google_credentials).exists():
+    raise FileNotFoundError(f"Arquivo da chave Google não encontrado: {google_credentials}")
 
-# Garante que o Google use esse caminho
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "google_credentials.json")
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = google_credentials
+
+print("[DEBUG] GOOGLE_APPLICATION_CREDENTIALS:", google_credentials)
+
 
 
 # Função com edge-tts (Microsoft)
