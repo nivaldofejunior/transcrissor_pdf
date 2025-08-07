@@ -54,27 +54,20 @@ async def upload_pdf(
     pasta = f"data/aulas/{aula_id}"
     os.makedirs(pasta, exist_ok=True)
 
-    nome_arquivo = unicodedata.normalize("NFKD", file.filename).encode("ASCII", "ignore").decode("utf-8").replace(" ", "_")
+    nome_arquivo = unicodedata.normalize("NFKD", file.filename)\
+        .encode("ASCII", "ignore").decode("utf-8").replace(" ", "_")
     caminho_pdf = os.path.join(pasta, nome_arquivo)
 
     with open(caminho_pdf, "wb") as f:
         f.write(await file.read())
-
-    transcricao_crua = extrair_texto_pdf(caminho_pdf)
-    transcricao_limpa = limpar_transcricao(transcricao_crua)
-
-    try:
-        transcricao_melhorada = melhorar_pontuacao_com_gemini(transcricao_limpa)
-    except Exception as e:
-        print(f"[WARN] Falha na melhoria com IA: {e}")
-        transcricao_melhorada = transcricao_limpa
 
     pdf_data = {
         "aula_id": aula_id,
         "filename": nome_arquivo,
         "descricao": descricao,
         "caminho": caminho_pdf,
-        "transcricao": transcricao_melhorada,
+        "transcricao": None,          # agora vai ser preenchido pela task
+        "audio_path": None,           # idem
         "data_upload": datetime.utcnow(),
         "status": "processando"
     }
@@ -82,6 +75,7 @@ async def upload_pdf(
     result = await db.pdfs.insert_one(pdf_data)
     pdf_id = str(result.inserted_id)
 
+    # 🔥 Dispara processamento completo no Celery
     gerar_audio_google_task.delay(pdf_id)
 
     pdf_data.pop("_id", None)

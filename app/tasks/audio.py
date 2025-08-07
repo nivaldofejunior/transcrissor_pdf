@@ -1,16 +1,33 @@
+# app/tasks/audio.py
 from app.tasks.celery_app import celery_app
-from app.services.audio_generator import gerar_audio_google
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
+
 import os
 import asyncio
 import requests
 
+from app.services.pdf_extractor import extrair_texto_pdf
+from app.services.text_cleaner import limpar_transcricao
+from app.services.ia_service import melhorar_pontuacao_com_gemini
+from app.services.audio_generator import gerar_audio_google
+
 MONGO_URI = os.getenv("MONGO_URI")
-BACKEND_URL = os.getenv("BACKEND_URL", "http://api:8001")
+# no .env: BACKEND_URL=http://api:8001/api   (sem aspas!)
+BACKEND_URL = os.getenv("BACKEND_URL", "http://api:8001/api")
+
 
 @celery_app.task(name="app.tasks.audio.gerar_audio_google_task")
 def gerar_audio_google_task(pdf_id: str):
+    """
+    Pipeline completo no worker:
+      - carrega registro do PDF
+      - extrai texto do PDF
+      - limpa + melhora pontuação com IA (fallback em caso de erro)
+      - gera áudio (Google TTS)
+      - atualiza Mongo (transcrição / audio_path)
+      - notifica FastAPI via POST /api/eventos/pdf-audio (SSE no backend)
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -18,47 +35,77 @@ def gerar_audio_google_task(pdf_id: str):
     db = client["projeto_t_db"]
 
     try:
-        # 1. Buscar o PDF
+        # 1) Carregar registro do PDF
         pdf = loop.run_until_complete(db.pdfs.find_one({"_id": ObjectId(pdf_id)}))
-        if not pdf or not pdf.get("transcricao"):
-            print(f"[Celery] PDF {pdf_id} não encontrado ou sem transcrição.")
+        if not pdf:
+            print(f"[Celery] PDF {pdf_id} não encontrado.")
+            _post_evento(status="erro", pdf_id=pdf_id, erro="PDF não encontrado no banco.")
             return
 
-        # 2. Gerar áudio
-        pasta = os.path.dirname(pdf["caminho"])
-        nome_arquivo_base = os.path.splitext(pdf["filename"])[0]
-        caminho_audio = os.path.join(pasta, f"{nome_arquivo_base}_google.mp3")
+        caminho_pdf = pdf.get("caminho")
+        if not caminho_pdf or not os.path.exists(caminho_pdf):
+            _post_evento(status="erro", pdf_id=pdf_id, erro="Caminho do PDF ausente ou inexistente.")
+            return
 
-        gerar_audio_google(pdf["transcricao"], caminho_audio)
+        # 2) Extrair + limpar + IA (pontuação)
+        try:
+            transcricao_crua = extrair_texto_pdf(caminho_pdf)
+            transcricao_limpa = limpar_transcricao(transcricao_crua)
 
-        # 3. Atualizar caminho do áudio no banco
+            try:
+                transcricao_melhorada = melhorar_pontuacao_com_gemini(transcricao_limpa)
+            except Exception as e_ia:
+                print(f"[WARN] Falha na IA de pontuação: {e_ia}")
+                transcricao_melhorada = transcricao_limpa
+
+            loop.run_until_complete(db.pdfs.update_one(
+                {"_id": ObjectId(pdf_id)},
+                {"$set": {"transcricao": transcricao_melhorada}}
+            ))
+        except Exception as e_tx:
+            _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao processar texto: {e_tx}")
+            return
+
+        # 3) Gerar TTS (Google)
+        pasta = os.path.dirname(caminho_pdf)
+        nome_base = os.path.splitext(pdf["filename"])[0]
+        caminho_audio = os.path.join(pasta, f"{nome_base}_google.mp3")
+
+        try:
+            gerar_audio_google(transcricao_melhorada, caminho_audio)
+        except Exception as e_tts:
+            _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao gerar áudio: {e_tts}")
+            return
+
         loop.run_until_complete(db.pdfs.update_one(
             {"_id": ObjectId(pdf_id)},
             {"$set": {"audio_path": caminho_audio}}
         ))
 
-        # 4. Enviar POST para o backend informando que concluiu
-        requests.post(
-            f"{BACKEND_URL}/eventos/pdf-audio",
-            json={"pdf_id": pdf_id, "status": "concluido"},
-            timeout=10
-        )
+        # 4) Sucesso → POST evento (FastAPI atualiza status + emite SSE)
+        _post_evento(status="concluido", pdf_id=pdf_id)
 
-        print(f"[Celery] Áudio gerado com sucesso para PDF {pdf_id}")
+        print(f"[Celery] Pipeline concluído para PDF {pdf_id}")
 
     except Exception as e:
-        # Enviar erro ao backend
+        # fallback geral
         try:
-            requests.post(
-                f"{BACKEND_URL}/eventos/pdf-audio",
-                json={"pdf_id": pdf_id, "status": "erro", "erro": str(e)},
-                timeout=10
-            )
+            _post_evento(status="erro", pdf_id=pdf_id, erro=str(e))
         except Exception as post_err:
             print(f"[Celery] Falha ao notificar erro: {post_err}")
-
-        print(f"[Celery] Erro ao gerar áudio para PDF {pdf_id}: {e}")
-        raise e
-
+        raise
     finally:
         client.close()
+
+
+def _post_evento(*, status: str, pdf_id: str, erro: str | None = None) -> None:
+    """
+    Notifica o backend FastAPI (container api) para:
+      - atualizar status no Mongo
+      - publicar evento SSE para o frontend
+    """
+    base = BACKEND_URL.rstrip("/")  # evita "//"
+    url = f"{base}/eventos/pdf-audio"
+    payload = {"pdf_id": pdf_id, "status": status, "erro": erro}
+    r = requests.post(url, json=payload, timeout=10)
+    r.raise_for_status()
