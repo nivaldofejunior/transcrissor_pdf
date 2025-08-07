@@ -1,0 +1,65 @@
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: transcrissor-pdf-mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - mongodb-data:/data/db
+      - ./docker/mongo/init:/docker-entrypoint-initdb.d
+    networks:
+      - projetot-network
+
+  redis:
+    image: redis:7.2
+    container_name: transcrissor-pdf-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - projetot-network
+
+  api:
+    build: .
+    container_name: transcrissor-pdf-api
+    restart: always
+    ports:
+      - "8001:8001"
+    depends_on:
+      - mongodb
+      - redis
+    env_file:
+      - .env
+    networks:
+      - projetot-network
+    volumes:
+      - .:/app
+    command: poetry run uvicorn app.main:app --host 0.0.0.0 --port 8001
+
+  celery:
+    build: .
+    container_name: transcrissor-pdf-celery
+    restart: always
+    depends_on:
+      - redis
+      - api
+    env_file:
+      - .env
+    networks:
+      - projetot-network
+    volumes:
+      - .:/app
+    command: poetry run celery -A app.tasks.celery_app.celery_app worker --loglevel=info --pool=solo
+
+networks:
+  projetot-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:

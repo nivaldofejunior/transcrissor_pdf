@@ -11,3 +11,6 @@ class PdfInDB(BaseModel):
     transcricao: Optional[str] = None
     audio_path: Optional[str] = None
     data_upload: datetime
+
+    class Config:
+        allow_population_by_field_name = True
