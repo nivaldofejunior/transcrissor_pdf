@@ -31,14 +31,18 @@ async def criar_materia(
 @router.get("/materias/", response_model=List[MateriaInDB])
 async def listar_materias(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    user: UsuarioToken = Depends(get_usuario_atual),   # <<< pega usuário logado
+    user: UsuarioToken = Depends(get_usuario_atual),
 ):
     """
-    Lista todas as matérias cadastradas do usuário logado.
+    Lista as matérias do usuário logado.
     """
     materias: List[MateriaInDB] = []
-    cursor = db.aulas.find({"usuario_id": user.id}, {"pdf_path": 0, "audio_path": 0, "audio_gerado": 0}).sort("data_upload", -1)
-    async for materia in cursor:
-        materia["id"] = str(materia.pop("_id"))
-        materias.append(MateriaInDB(**materia))
+    cursor = (
+        db.materias
+        .find({"usuario_id": user.id})              
+        .sort("data_criacao", -1)                    
+    )
+    async for m in cursor:
+        m["id"] = str(m.pop("_id"))
+        materias.append(MateriaInDB(**m))
     return materias
