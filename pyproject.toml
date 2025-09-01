@@ -58,11 +58,14 @@ python-jose = { version = ">=3.5.0,<4.0.0", extras = ["cryptography"] }
 email-validator = ">=2.2.0,<3.0.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.0"
+pytest = "^8.2.0"
 taskipy = "^1.14.1"
 ruff = "^0.12.8"
 mypy = "^1.17.1"
 httpx = "^0.28.1"
+mongomock-motor = "^0.0.36"
+anyio = "^4.10.0"
+pytest-asyncio = "^1.1.0"
 
 [tool.taskipy.tasks]
 # 🔥 Dev server

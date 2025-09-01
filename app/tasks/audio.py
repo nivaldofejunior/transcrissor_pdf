@@ -1,111 +1,132 @@
 # app/tasks/audio.py
 from app.tasks.celery_app import celery_app
-from motor.motor_asyncio import AsyncIOMotorClient
-from bson import ObjectId
 
 import os
-import asyncio
+from pathlib import Path
+from typing import Optional
 import requests
+from bson import ObjectId
+from pymongo import MongoClient
 
+from app.core.paths import audio_path
 from app.services.pdf_extractor import extrair_texto_pdf
 from app.services.text_cleaner import limpar_transcricao
 from app.services.ia_service import melhorar_pontuacao_com_gemini
-from app.services.audio_generator import gerar_audio_google
+from app.services.audio_generator import gerar_audio_google  # síncrona
 
-MONGO_URI = os.getenv("MONGO_URI")
-# no .env: BACKEND_URL=http://api:8001/api   (sem aspas!)
-BACKEND_URL = os.getenv("BACKEND_URL", "http://api:8001/api")
+# ---- ENV ----
+# Usa a mesma MONGO_URI que a API (vinda do .env). Não force outro DB aqui.
+MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGODB_URI", "mongodb://mongodb:27017/projeto_t_db")
+DB_NAME = os.getenv("DB_NAME", "projeto_t_db")
 
+BACKEND_URL = (os.getenv("BACKEND_URL", "http://api:8001/api") or "").rstrip("/")
+DATA_DIR = os.getenv("DATA_DIR", "data")
+
+def _log(msg: str):
+    print(f"[task.audio] {msg}", flush=True)
+
+def _get_db():
+    client = MongoClient(MONGO_URI)
+    db = client.get_default_database()  # vai funcionar porque tua URI inclui /projeto_t_db
+    return client, db
+
+def _post_evento(*, status: str, pdf_id: str, erro: Optional[str] = None) -> None:
+    if not BACKEND_URL:
+        _log("BACKEND_URL vazio; pulando POST de evento")
+        return
+    try:
+        url = f"{BACKEND_URL}/eventos/pdf-audio"
+        r = requests.post(url, json={"pdf_id": pdf_id, "status": status, "erro": erro}, timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        _log(f"Falha ao notificar backend: {e}")
 
 @celery_app.task(name="app.tasks.audio.gerar_audio_google_task")
 def gerar_audio_google_task(pdf_id: str):
-    """
-    Pipeline completo no worker:
-      - carrega registro do PDF
-      - extrai texto do PDF
-      - limpa + melhora pontuação com IA (fallback em caso de erro)
-      - gera áudio (Google TTS)
-      - atualiza Mongo (transcrição / audio_path)
-      - notifica FastAPI via POST /api/eventos/pdf-audio (SSE no backend)
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    client = AsyncIOMotorClient(MONGO_URI)
-    db = client["projeto_t_db"]
+    client, db = _get_db()
+    _log(f"INICIO pdf_id={pdf_id} DATA_DIR={DATA_DIR} MONGO_URI={MONGO_URI} DB={db.name}")
 
     try:
-        # 1) Carregar registro do PDF
-        pdf = loop.run_until_complete(db.pdfs.find_one({"_id": ObjectId(pdf_id)}))
-        if not pdf:
-            print(f"[Celery] PDF {pdf_id} não encontrado.")
-            _post_evento(status="erro", pdf_id=pdf_id, erro="PDF não encontrado no banco.")
+        doc = db.pdfs.find_one({"_id": ObjectId(pdf_id)})
+        if not doc:
+            _log(f"PDF {pdf_id} não encontrado no Mongo")
+            _post_evento(status="erro", pdf_id=pdf_id, erro="PDF não encontrado")
             return
 
-        caminho_pdf = pdf.get("caminho")
-        if not caminho_pdf or not os.path.exists(caminho_pdf):
-            _post_evento(status="erro", pdf_id=pdf_id, erro="Caminho do PDF ausente ou inexistente.")
+        user_id = str(doc.get("usuario_id") or "")
+        aula_id = doc.get("aula_id")
+        caminho_pdf = doc.get("caminho")
+
+        if not user_id or not aula_id or not caminho_pdf:
+            _log(f"Documento incompleto: usuario_id={user_id} aula_id={aula_id} caminho={caminho_pdf}")
+            db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+            _post_evento(status="erro", pdf_id=pdf_id, erro="Documento incompleto (usuario_id/aula_id/caminho)")
             return
 
-        # 2) Extrair + limpar + IA (pontuação)
-        try:
-            transcricao_crua = extrair_texto_pdf(caminho_pdf)
-            transcricao_limpa = limpar_transcricao(transcricao_crua)
+        pdf_path_fs = Path(caminho_pdf)
+        if not pdf_path_fs.exists():
+            _log(f"PDF não existe no worker: {pdf_path_fs}")
+            db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+            _post_evento(status="erro", pdf_id=pdf_id, erro="Arquivo PDF inexistente no worker")
+            return
+
+        db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "processando"}})
+
+        texto = doc.get("transcricao")
+        if not texto:
+            _log("Extraindo texto do PDF...")
+            try:
+                texto_cru = extrair_texto_pdf(str(pdf_path_fs))
+            except Exception as e:
+                _log(f"Falha ao extrair texto: {e}")
+                db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+                _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao extrair texto: {e}")
+                return
+
+            if not texto_cru or not texto_cru.strip():
+                _log("Texto extraído vazio")
+                db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+                _post_evento(status="erro", pdf_id=pdf_id, erro="Texto vazio após extração")
+                return
+
+            _log("Limpando transcrição...")
+            texto_limpo = limpar_transcricao(texto_cru) or texto_cru
 
             try:
-                transcricao_melhorada = melhorar_pontuacao_com_gemini(transcricao_limpa)
-            except Exception as e_ia:
-                print(f"[WARN] Falha na IA de pontuação: {e_ia}")
-                transcricao_melhorada = transcricao_limpa
+                _log("Melhorando pontuação com IA...")
+                texto = melhorar_pontuacao_com_gemini(texto_limpo) or texto_limpo
+            except Exception as e:
+                _log(f"Falha na IA de pontuação (seguindo com texto limpo): {e}")
+                texto = texto_limpo
 
-            loop.run_until_complete(db.pdfs.update_one(
-                {"_id": ObjectId(pdf_id)},
-                {"$set": {"transcricao": transcricao_melhorada}}
-            ))
-        except Exception as e_tx:
-            _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao processar texto: {e_tx}")
-            return
+            db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"transcricao": texto}})
+        else:
+            _log("Transcrição já existe. Pulando extração.")
 
-        # 3) Gerar TTS (Google)
-        pasta = os.path.dirname(caminho_pdf)
-        nome_base = os.path.splitext(pdf["filename"])[0]
-        caminho_audio = os.path.join(pasta, f"{nome_base}_google.mp3")
-
+        dest_audio = audio_path(user_id, aula_id, pdf_id, ext="mp3")
+        dest_audio.parent.mkdir(parents=True, exist_ok=True)
+        _log(f"Gerando áudio em: {dest_audio}")
         try:
-            gerar_audio_google(transcricao_melhorada, caminho_audio)
-        except Exception as e_tts:
-            _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao gerar áudio: {e_tts}")
+            gerar_audio_google(texto, str(dest_audio))
+        except Exception as e:
+            _log(f"Falha ao gerar áudio: {e}")
+            db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+            _post_evento(status="erro", pdf_id=pdf_id, erro=f"Falha ao gerar áudio: {e}")
             return
 
-        loop.run_until_complete(db.pdfs.update_one(
+        db.pdfs.update_one(
             {"_id": ObjectId(pdf_id)},
-            {"$set": {"audio_path": caminho_audio}}
-        ))
-
-        # 4) Sucesso → POST evento (FastAPI atualiza status + emite SSE)
+            {"$set": {"audio_path": str(dest_audio), "status": "concluido"}}
+        )
         _post_evento(status="concluido", pdf_id=pdf_id)
-
-        print(f"[Celery] Pipeline concluído para PDF {pdf_id}")
+        _log("SUCESSO: áudio gerado e documento atualizado")
 
     except Exception as e:
-        # fallback geral
+        _log(f"ERRO geral na task: {e}")
         try:
-            _post_evento(status="erro", pdf_id=pdf_id, erro=str(e))
-        except Exception as post_err:
-            print(f"[Celery] Falha ao notificar erro: {post_err}")
-        raise
+            db.pdfs.update_one({"_id": ObjectId(pdf_id)}, {"$set": {"status": "erro"}})
+        except Exception:
+            pass
+        _post_evento(status="erro", pdf_id=pdf_id, erro=str(e))
     finally:
         client.close()
-
-
-def _post_evento(*, status: str, pdf_id: str, erro: str | None = None) -> None:
-    """
-    Notifica o backend FastAPI (container api) para:
-      - atualizar status no Mongo
-      - publicar evento SSE para o frontend
-    """
-    base = BACKEND_URL.rstrip("/")  # evita "//"
-    url = f"{base}/eventos/pdf-audio"
-    payload = {"pdf_id": pdf_id, "status": status, "erro": erro}
-    r = requests.post(url, json=payload, timeout=10)
-    r.raise_for_status()
