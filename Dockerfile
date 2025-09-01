@@ -11,7 +11,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gcc build-essential \
     libmagic1 libmagic-dev \
-    libglib2.0-0 libpango1.0-0 \
+    libglib2.0-0 libpango-1.0-0 \
     ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
